@@ -1,0 +1,29 @@
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+hasil_json/
+runtime/mikrotik-*.lock
+.env
+.env.*
+!.env.example
+.local-config-path
+data/push_subscriptions.json*
+data/connection_incidents.json*
+.DS_Store
+runtime/backups/*.json
+*.log
+
+# Data operasional, pelanggan, koordinat, antrean, dan backup tetap lokal.
+data/
+runtime/
+contoh CSV/
+examples/CSV_TEGALSRUNI_SIAP_IMPORT.csv
+examples/mikrotik_simulasi_tegalsruni.json
+
+# Kunci dan arsip lokal tidak ikut source repository.
+*.pem
+*.key
+*.p12
+*.pfx
+*.zip

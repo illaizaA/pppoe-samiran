@@ -1,0 +1,22 @@
+[
+  {
+    "id": "DUMMY-001",
+    "user": "dummy-notifikasi-andi",
+    "nama_asli": "Pelanggan Uji Andi",
+    "router": "ROUTER DUMMY NOTIFIKASI",
+    "lokasi": "Wilayah Uji Samiran",
+    "latitude": -7.6,
+    "longitude": 110.8,
+    "status": "OFFLINE"
+  },
+  {
+    "id": "DUMMY-002",
+    "user": "dummy-notifikasi-budi",
+    "nama_asli": "Pelanggan Uji Budi",
+    "router": "ROUTER DUMMY NOTIFIKASI",
+    "lokasi": "Wilayah Uji JSS",
+    "latitude": -7.601,
+    "longitude": 110.801,
+    "status": "OFFLINE"
+  }
+]

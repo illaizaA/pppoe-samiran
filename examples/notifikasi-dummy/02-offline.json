@@ -1,0 +1,19 @@
+{
+  "router": "ROUTER DUMMY NOTIFIKASI",
+  "pppoe": [
+    {
+      "user": "dummy-notifikasi-andi",
+      "ip": "192.0.2.10",
+      "mac": "02:00:00:00:00:01",
+      "uptime": "-",
+      "status": "OFFLINE"
+    },
+    {
+      "user": "dummy-notifikasi-budi",
+      "ip": "192.0.2.11",
+      "mac": "02:00:00:00:00:02",
+      "uptime": "15m",
+      "status": "ONLINE"
+    }
+  ]
+}
