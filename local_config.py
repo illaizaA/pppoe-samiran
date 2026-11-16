@@ -1,10 +1,11 @@
-"""Load optional external JSON secrets before Flask is initialized."""
+"""Load project .env, then fill unset values from legacy external JSON secrets."""
 import json
 import os
 from pathlib import Path
 
 CONFIG_KEYS = {
-    'SECRET_KEY', 'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_SUBJECT',
+    'SECRET_KEY', 'VAPID_PUBLIC_KEY', 'VAPID_PRIVATE_KEY', 'VAPID_PRIVATE_KEY_FILE',
+    'VAPID_SUBJECT',
     'MIKROTIK_API_TOKEN', 'PUBLIC_BASE_URL',
     'PORT', 'PPPOE_ROOT', 'LIVE_SAMPLE_MAX_GAP_SECONDS',
 }

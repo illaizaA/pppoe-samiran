@@ -3,13 +3,13 @@ load_config()
 
 from flask import Flask, render_template, request, redirect, flash, url_for, jsonify
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import calendar
 import csv
 import io
 import json
 from collections import Counter
-from threading import RLock
+from threading import Event, RLock, Thread
 from urllib.parse import urlencode
 from uuid import uuid4
 from merge_pppoe import main as merge_pppoe_automatically
@@ -51,6 +51,10 @@ USER_PPPOES_FILE = DATA_DIR / "pppoes.json"
 PPPOES_TEMP_FILE = DATA_DIR / "pppoes_temp.json"
 MANUAL_FILE = DATA_DIR / "user_manual.json"
 ROUTER_HEALTH_FILE = DATA_DIR / "router_health.json"
+ROUTER_HEARTBEAT_ALERT_FILE = DATA_DIR / "router_heartbeat_alerts.json"
+MIKROTIK_HEARTBEAT_TIMEOUT_SECONDS = max(1, int(os.environ.get("MIKROTIK_HEARTBEAT_TIMEOUT_SECONDS", "180")))
+MIKROTIK_HEARTBEAT_CHECK_SECONDS = max(5, int(os.environ.get("MIKROTIK_HEARTBEAT_CHECK_SECONDS", "30")))
+HEARTBEAT_MONITOR_STOP = Event()
 
 DATA_LOCK = RLock()
 router_state_cache = {}
@@ -287,11 +291,11 @@ def _atomic_write_json(file_path, data):
 def save_notifications(notifications):
     _atomic_write_json(NOTIFICATIONS_FILE, notifications)
 
-def add_notification(message, notification_type="info", ont_id=None, ont_name=None, timestamp=None, *, router=None, title="Monitoring JSS", target_url="/notifications"):
+def add_notification(message, notification_type="info", ont_id=None, ont_name=None, timestamp=None, *, router=None, title="Monitoring JSS", target_url="/notifications", push=True):
     with DATA_LOCK:
-        return _add_notification_locked(message, notification_type, ont_id, ont_name, timestamp, router, title, target_url)
+        return _add_notification_locked(message, notification_type, ont_id, ont_name, timestamp, router, title, target_url, push)
 
-def _add_notification_locked(message, notification_type, ont_id, ont_name, timestamp, router, title, target_url):
+def _add_notification_locked(message, notification_type, ont_id, ont_name, timestamp, router, title, target_url, push):
     notifications = load_notifications()
     next_id = (max((n.get('id', 0) for n in notifications), default=0) + 1)
     new_notification = {
@@ -302,12 +306,14 @@ def _add_notification_locked(message, notification_type, ont_id, ont_name, times
     notifications.append(new_notification)
     _backup_notifications(notifications)
     save_notifications(notifications)
-    if router:
+    if router and push:
         deliver_push(new_notification, router, title, target_url)
     return new_notification
 
 from notification_push import init_notifications
-deliver_push, observe_connections = init_notifications(app, DATA_DIR, _read_json, _atomic_write_json, DATA_LOCK, add_notification, load_data)
+_, observe_connections = init_notifications(app, DATA_DIR, _read_json, _atomic_write_json, DATA_LOCK, add_notification, load_data)
+deliver_push = observe_connections.queue_delivery
+observe_status_snapshot = observe_connections.status_snapshot
 
 def _backup_notifications(notifications):
     try:
@@ -804,6 +810,55 @@ def router_health():
     return jsonify(integration='routeros_api_v1', routers=health)
 
 
+def check_router_heartbeats(now=None):
+    """Create one push alert when a previously monitored router goes quiet."""
+    now = now or datetime.now(timezone.utc)
+    changed = False
+    with DATA_LOCK:
+        health = _read_json(ROUTER_HEALTH_FILE, {})
+        alerts = _read_json(ROUTER_HEARTBEAT_ALERT_FILE, {})
+        if not isinstance(health, dict):
+            health = {}
+        if not isinstance(alerts, dict):
+            alerts = {}
+
+        for router_key, state in health.items():
+            if not isinstance(state, dict) or not state.get('last_success'):
+                continue
+            try:
+                last_success = datetime.fromisoformat(str(state['last_success']).replace('Z', '+00:00'))
+                if last_success.tzinfo is None:
+                    last_success = last_success.replace(tzinfo=timezone.utc)
+                age = (now - last_success.astimezone(timezone.utc)).total_seconds()
+            except (TypeError, ValueError):
+                continue
+
+            if age >= MIKROTIK_HEARTBEAT_TIMEOUT_SECONDS and router_key not in alerts:
+                router_name = str(state.get('router_identity') or router_key)
+                timeout = MIKROTIK_HEARTBEAT_TIMEOUT_SECONDS
+                timeout_text = f'{timeout // 60} menit' if timeout % 60 == 0 else f'{timeout} detik'
+                message = (f'Gangguan komunikasi pada MikroTik {router_name}: data monitoring '
+                           f'tidak diterima selama lebih dari {timeout_text}. Periksa koneksi router.')
+                add_notification(message, 'error', ont_name=router_name, router=router_name,
+                                 title='Gangguan MikroTik', target_url='/notifications')
+                alerts[router_key] = {'last_success': state['last_success'], 'alerted_at': now.isoformat()}
+                changed = True
+            elif age < MIKROTIK_HEARTBEAT_TIMEOUT_SECONDS and router_key in alerts:
+                alerts.pop(router_key, None)
+                changed = True
+
+        if changed:
+            _atomic_write_json(ROUTER_HEARTBEAT_ALERT_FILE, alerts)
+
+
+def _router_heartbeat_monitor():
+    while not HEARTBEAT_MONITOR_STOP.wait(MIKROTIK_HEARTBEAT_CHECK_SECONDS):
+        try:
+            check_router_heartbeats()
+        except Exception:
+            app.logger.exception('Pemeriksaan heartbeat MikroTik gagal')
+
+
 def apply_routeros_snapshot(payload):
     if not MIKROTIK_API_TOKEN:
         return jsonify(message='Konfigurasikan MIKROTIK_API_TOKEN sebelum sinkronisasi.'), 503
@@ -838,7 +893,8 @@ def apply_routeros_snapshot(payload):
     for row in plan['matched_rows']:
         groups.setdefault(row.get('router', '-'), []).append(row)
     for area, rows in groups.items():
-        observe_connections(area, rows)
+        observe_connections(area, rows, push_incidents=False)
+    observe_status_snapshot(payload['router_key'], payload['router_identity'], plan['matched_rows'])
     return jsonify(status='success', report=plan['report'])
 
 
@@ -1240,4 +1296,6 @@ def get_analytics_data():
 
 if __name__ == '__main__':
     debug_mode = os.environ.get("FLASK_DEBUG", "0").strip().lower() in {"1", "true", "yes"}
+    if not debug_mode or os.environ.get("WERKZEUG_RUN_MAIN", "").lower() == "true":
+        Thread(target=_router_heartbeat_monitor, name='mikrotik-heartbeat-monitor', daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", "5000")), debug=debug_mode)

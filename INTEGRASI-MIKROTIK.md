@@ -50,7 +50,7 @@ Jika pengambilan gagal, JSON sukses terakhir dipertahankan dan endpoint /api/rou
 
 ## Notifikasi
 
-Snapshot awal hanya membangun baseline. ONLINE terkonfirmasi lalu OFFLINE minimal 3 menit melalui pembaruan valid menghasilkan satu gangguan; ONLINE kembali menghasilkan pemulihan. Metadata notifikasi diambil per kelompok wilayah asli. Kegagalan router mereset kandidat gangguan yang belum terkonfirmasi. Tab dashboard tidak perlu dibuka, tetapi Flask dan poller harus tetap berjalan. Web Push tetap membutuhkan aktivasi perangkat dan localhost/HTTPS.
+Snapshot awal hanya membangun baseline. Perubahan status yang terkonfirmasi pada dua snapshot berturut-turut (default `PPPOE_STATUS_CONFIRMATIONS=2`) mengirim ringkasan push per router fisik. ONLINE yang bertahan lalu OFFLINE minimal 3 menit tetap membuat catatan gangguan pelanggan; ONLINE kembali membuat catatan pemulihan dan durasinya. Metadata detail diambil per kelompok wilayah asli. Kegagalan atau jeda snapshot mereset kandidat yang belum terkonfirmasi. Setelah 180 detik tanpa snapshot sukses, monitor heartbeat mengirim satu push Gangguan MikroTik dan mengaktifkannya kembali setelah sinkronisasi pulih. Tab dashboard tidak perlu dibuka, tetapi Flask harus dijalankan dengan `python app.py` dan poller harus berjalan. Web Push tetap membutuhkan aktivasi perangkat dan localhost/HTTPS.
 
 ## Pemeriksaan
 
