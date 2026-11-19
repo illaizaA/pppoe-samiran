@@ -2,8 +2,7 @@
   const status = document.getElementById('push-status');
   const enable = document.getElementById('push-enable');
   const disable = document.getElementById('push-disable');
-  const test = document.getElementById('push-test');
-  const controls = [enable, disable, test];
+  const controls = [enable, disable];
   controls.forEach(button => button.disabled = true);
 
   let config = null;
@@ -18,7 +17,6 @@
   const refresh = () => {
     enable.disabled = !config?.configured || active;
     disable.disabled = !subscription;
-    test.disabled = !active;
     if (keyChanged) {
       status.textContent = 'Pasangan VAPID berubah. Aktifkan ulang notifikasi pada perangkat ini.';
     } else {
@@ -47,7 +45,7 @@
       config = await response.json();
       document.getElementById('push-monitoring-status').textContent = config.liveMonitoring
         ? 'Deteksi gangguan: token MikroTik sudah dikonfigurasi.'
-        : 'Deteksi gangguan belum aktif: token MikroTik belum dikonfigurasi. Uji perangkat tetap bisa digunakan.';
+        : 'Deteksi gangguan belum aktif: token MikroTik belum dikonfigurasi.';
     }
     if (!config.configured) throw Error('Konfigurasi VAPID belum lengkap. Jalankan python scripts/setup_notifications.py pada server.');
     checkBrowserSupport();
@@ -116,19 +114,6 @@
       subscription = null;
       keyChanged = false;
       refresh();
-    } catch (error) {
-      refresh();
-      status.textContent = error.message;
-    }
-  };
-
-  test.onclick = async () => {
-    busy();
-    try {
-      await initialize();
-      await request('/api/push/test', 'POST', {endpoint: subscription.endpoint});
-      refresh();
-      status.textContent = 'Pesan uji diterima layanan push. Periksa notifikasi Windows/HP; penerimaan layanan belum membuktikan tampil di perangkat.';
     } catch (error) {
       refresh();
       status.textContent = error.message;
