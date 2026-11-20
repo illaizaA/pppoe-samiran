@@ -5,7 +5,9 @@ import secrets
 import base64
 import hashlib
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import urlparse, quote
 from flask import request, session, jsonify, redirect
 
@@ -13,6 +15,8 @@ from flask import request, session, jsonify, redirect
 def init_notifications(app, root, read, write, lock, notify, load_customers):
     subscriptions_file = root / 'push_subscriptions.json'
     states_file = root / 'connection_incidents.json'
+    snapshots_file = root / 'pppoe_status_snapshots.json'
+    push_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix='web-push')
 
     def device_id():
         token = request.headers.get('X-Push-Device', '')
@@ -24,8 +28,23 @@ def init_notifications(app, root, read, write, lock, notify, load_customers):
         return bool(device_id()) and secrets.compare_digest(
             request.headers.get('X-CSRF-Token', ''), session.get('push_csrf', '!'))
 
+    def private_key_setting():
+        configured_path = (os.environ.get('VAPID_PRIVATE_KEY_FILE') or '').strip()
+        if configured_path:
+            path = Path(configured_path)
+            if not path.is_absolute():
+                path = Path(__file__).resolve().parent / path
+            return str(path)
+        return os.environ.get('VAPID_PRIVATE_KEY', '').strip()
+
     def configured():
-        return all(os.environ.get(k) for k in ('VAPID_PRIVATE_KEY', 'VAPID_PUBLIC_KEY', 'VAPID_SUBJECT'))
+        private_key = private_key_setting()
+        if not private_key:
+            return False
+        configured_path = (os.environ.get('VAPID_PRIVATE_KEY_FILE') or '').strip()
+        if configured_path and not Path(private_key).is_file():
+            return False
+        return all(os.environ.get(k) for k in ('VAPID_PUBLIC_KEY', 'VAPID_SUBJECT'))
 
     @app.route('/technician/login')
     def legacy_login():
@@ -121,7 +140,7 @@ def init_notifications(app, root, read, write, lock, notify, load_customers):
                 webpush(subscription_info=row['subscription'], data=json.dumps({
                     'title': title, 'body': notification['message'], 'url': url,
                     'tag': 'jss-' + str(notification['id'])}),
-                    vapid_private_key=os.environ['VAPID_PRIVATE_KEY'],
+                    vapid_private_key=private_key_setting(),
                     vapid_claims={'sub': os.environ['VAPID_SUBJECT']}, timeout=5)
                 result['sent'] += 1
             except WebPushException as exc:
@@ -139,7 +158,98 @@ def init_notifications(app, root, read, write, lock, notify, load_customers):
                 app.logger.exception('Konfigurasi/pengiriman push gagal')
         return result
 
-    def observe(router, incoming, now=None):
+    def queue_delivery(notification, router, title, url):
+        if configured():
+            push_executor.submit(deliver, notification, router, title, url)
+
+    def observe_status_snapshot(source_key, display_name, incoming, now=None):
+        """Send a summary when a status change appears in consecutive snapshots."""
+        now = now or datetime.now(timezone.utc)
+        try:
+            confirmations = max(1, int(os.environ.get('PPPOE_STATUS_CONFIRMATIONS', '2')))
+            max_gap = max(1, int(os.environ.get('LIVE_SAMPLE_MAX_GAP_SECONDS', '360')))
+        except ValueError:
+            confirmations, max_gap = 2, 360
+
+        observed = {}
+        for row in incoming:
+            if not isinstance(row, dict):
+                continue
+            username = str(row.get('user', '')).strip()
+            status = str(row.get('status', '')).upper()
+            if username and status in ('ONLINE', 'OFFLINE'):
+                observed.setdefault(username.casefold(), (username, status))
+        if not observed:
+            return []
+
+        changes = []
+        with lock:
+            all_states = read(snapshots_file, {})
+            if not isinstance(all_states, dict):
+                all_states = {}
+            source_states = all_states.setdefault(str(source_key), {})
+            if not isinstance(source_states, dict):
+                source_states = all_states[str(source_key)] = {}
+
+            for key, (username, status) in observed.items():
+                state = source_states.get(key)
+                if not isinstance(state, dict):
+                    source_states[key] = {
+                        'status': status,
+                        'confirmed_status': status,
+                        'last_seen': now.isoformat(),
+                    }
+                    continue
+
+                try:
+                    last_seen = datetime.fromisoformat(state['last_seen'])
+                    if last_seen.tzinfo is None:
+                        last_seen = last_seen.replace(tzinfo=timezone.utc)
+                    gap = (now - last_seen.astimezone(timezone.utc)).total_seconds()
+                except (KeyError, TypeError, ValueError):
+                    gap = max_gap + 1
+
+                if gap < 0 or gap > max_gap:
+                    state.update(status=status, confirmed_status=status, last_seen=now.isoformat())
+                    state.pop('candidate_status', None)
+                    state.pop('candidate_count', None)
+                    continue
+
+                confirmed = state.get('confirmed_status', state.get('status', status))
+                if status == confirmed:
+                    state.pop('candidate_status', None)
+                    state.pop('candidate_count', None)
+                else:
+                    if state.get('candidate_status') == status:
+                        state['candidate_count'] = int(state.get('candidate_count', 1)) + 1
+                    else:
+                        state['candidate_status'] = status
+                        state['candidate_count'] = 1
+                    if state['candidate_count'] >= confirmations:
+                        changes.append({'user': username, 'from': confirmed, 'to': status})
+                        state['confirmed_status'] = status
+                        state.pop('candidate_status', None)
+                        state.pop('candidate_count', None)
+
+                state.update(status=status, last_seen=now.isoformat())
+
+            write(snapshots_file, all_states)
+
+        if changes:
+            offline_count = sum(item['to'] == 'OFFLINE' for item in changes)
+            online_count = sum(item['to'] == 'ONLINE' for item in changes)
+            parts = []
+            if offline_count:
+                parts.append(f'{offline_count} akun offline')
+            if online_count:
+                parts.append(f'{online_count} akun online')
+            message = f'Perubahan status PPPoE di {display_name}: ' + ', '.join(parts) + '.'
+            notify(message, 'warning' if offline_count else 'success', ont_name=display_name,
+                   router=display_name, title='Gangguan PPPoE' if offline_count else 'Koneksi PPPoE pulih',
+                   target_url='/admin')
+        return changes
+
+    def observe(router, incoming, now=None, *, push_incidents=True):
         now = now or datetime.now(timezone.utc)
         states = read(states_file, {})
         metadata = {str(r.get('user', '')).casefold(): r for r in load_customers() if r.get('router') == router}
@@ -171,12 +281,12 @@ def init_notifications(app, root, read, write, lock, notify, load_customers):
                 if state['status'] == 'ONLINE' or state.pop('pending_reset', False):
                     state['since'] = now.isoformat()
                 if state.get('since') and not state.get('alerted') and (now - datetime.fromisoformat(state['since'])).total_seconds() >= 180:
-                    notify(f'Gangguan: {name} ({username}), wilayah {location}. OFFLINE sejak {state["since"]}.', 'warning', meta.get('id'), username, router=router, title='Monitoring JSS — Pelanggan OFFLINE', target_url=url)
+                    notify(f'Gangguan: {name} ({username}), wilayah {location}. OFFLINE sejak {state["since"]}.', 'warning', meta.get('id'), username, router=router, title='Monitoring JSS — Pelanggan OFFLINE', target_url=url, push=push_incidents)
                     state['alerted'] = True
             elif state.get('since'):
                 if state.get('alerted'):
                     duration = int((now - datetime.fromisoformat(state['since'])).total_seconds())
-                    notify(f'Pulih: {name} ({username}), wilayah {location}. ONLINE pada {now.isoformat()}; durasi gangguan {duration} detik.', 'success', meta.get('id'), username, router=router, title='Monitoring JSS — Pelanggan ONLINE', target_url=url)
+                    notify(f'Pulih: {name} ({username}), wilayah {location}. ONLINE pada {now.isoformat()}; durasi gangguan {duration} detik.', 'success', meta.get('id'), username, router=router, title='Monitoring JSS — Pelanggan ONLINE', target_url=url, push=push_incidents)
                     state['recovered_at'] = now.isoformat()
                     state['duration_seconds'] = duration
                 state.pop('since', None)
@@ -187,4 +297,6 @@ def init_notifications(app, root, read, write, lock, notify, load_customers):
             state['last_seen'] = now.isoformat()
         write(states_file, states)
 
+    observe.queue_delivery = queue_delivery
+    observe.status_snapshot = observe_status_snapshot
     return deliver, observe
