@@ -5,6 +5,14 @@
   const test = document.getElementById('push-test');
   const controls = [enable, disable, test];
   controls.forEach(button => button.disabled = true);
+  if (!window.isSecureContext) {
+    status.textContent = 'Notifikasi perangkat belum bisa digunakan melalui HTTP. Buka dashboard melalui HTTPS untuk mengaktifkannya. Histori notifikasi tetap bisa dilihat di halaman ini.';
+    return;
+  }
+  if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+    status.textContent = 'Browser ini belum mendukung notifikasi perangkat (Web Push).';
+    return;
+  }
   let subscription = null;
   let active = false;
   let config;
@@ -34,7 +42,6 @@
     if (!response.ok) throw Error('Gagal memuat konfigurasi perangkat.');
     config = await response.json();
     document.getElementById('push-monitoring-status').textContent = config.liveMonitoring ? 'Deteksi gangguan: token MikroTik sudah dikonfigurasi.' : 'Deteksi gangguan belum aktif: token MikroTik belum dikonfigurasi. Uji perangkat tetap bisa digunakan.';
-    if (!window.isSecureContext || !('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) throw Error('Gunakan http://localhost:5081 pada komputer ini atau HTTPS; browser harus mendukung Web Push.');
     if (!config.configured) throw Error('Konfigurasi VAPID belum lengkap. Jalankan setup notifikasi pada server.');
     const registration = await navigator.serviceWorker.register('/push-sw.js');
     await navigator.serviceWorker.ready;

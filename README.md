@@ -19,6 +19,19 @@ Versi ini sudah dibuat **netral terhadap nama daerah**. Tidak ada data  daftar r
 
 ## Menjalankan aplikasi
 
+Proyek ini memakai Python/Flask. Jalankan dari terminal, bukan melalui Apache/PHP Laragon.
+Setelah clone, buat konfigurasi lokal terlebih dahulu (PowerShell):
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Isi `SECRET_KEY` dengan nilai acak dan `MIKROTIK_API_TOKEN` dengan token pilihanmu.
+File `.env` dibaca otomatis. Contoh konfigurasi memakai port **5081**, sehingga
+dashboard dibuka di `http://localhost:5081/dashboard` dan impor di
+`http://localhost:5081/admin`. Tanpa `.env` atau environment `PORT`, default Flask
+proyek ini adalah 5000; tautan 5000 di bawah berlaku untuk kondisi tersebut.
+
 ```bash
 python -m venv venv
 ```
@@ -92,6 +105,30 @@ curl -X POST -F "file=@examples/data_import.csv" \
 
 ## Data dari MikroTik
 
+### Setelah repository di-clone di komputer lain
+
+Git hanya membawa kode. `.env`, `.local-config-path`, `data/`, `runtime/`, dan
+`hasil_json/` sengaja diabaikan oleh Git. Password, token, data pelanggan, dan
+snapshot lokal tidak otomatis pindah ke komputer teman.
+
+Untuk integrasi pull API yang tersedia saat ini:
+
+1. Instal semua dependensi dengan `python -m pip install -r requirements.txt`.
+2. Isi `.env` lokal: host, port API, username/password monitoring, transport,
+   dan konfirmasi service router. Komputer tersebut harus dapat menjangkau API
+   router melalui jaringan/firewall/VPN yang sesuai.
+3. Jalankan `python app.py`, lalu impor data pelanggan di `/admin`. Poller hanya
+   memperbarui username yang sudah diimpor; akun yang belum diimpor dilewati.
+4. Jalankan poller di terminal kedua, misalnya
+   `python ambil_pppoe.py samiran --sync --watch`.
+   Untuk API biasa tanpa TLS/VPN, opsi eksplisit `--allow-plaintext` diperlukan;
+   gunakan hanya jika memang memilih koneksi tanpa enkripsi.
+
+`MIKROTIK_API_TOKEN` wajib terisi untuk `--sync` dan harus sama pada backend dan
+poller. `MIKROTIK_MONITOR_URL` harus menunjuk ke alamat/port Flask yang berjalan.
+Menjalankan website saja tidak memulai poller. Lihat [INTEGRASI-MIKROTIK.md](INTEGRASI-MIKROTIK.md)
+untuk detail; konfigurasi Candipetak masih belum mengonfirmasi service API.
+
 Endpoint penerimaan data:
 
 ```text
@@ -133,7 +170,7 @@ Parameter `router` penting agar satu router hanya mengambil perintah miliknya. S
 
 ## Konfigurasi environment
 
-Salin `.env.example` sebagai acuan. Aplikasi membaca environment variable langsung dari sistem.
+Salin `.env.example` menjadi `.env`. Aplikasi membacanya otomatis; environment variable sistem memiliki prioritas.
 
 - `APP_NAME`: nama aplikasi.
 - `SECRET_KEY`: secret Flask.

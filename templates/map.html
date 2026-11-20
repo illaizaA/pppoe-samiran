@@ -155,8 +155,10 @@
       #stat-total .value {
         color: #3498db;
       }
-      #stat-users .value {
-        color: #f39c12;
+      #map-coverage {
+        margin: 0;
+        padding: 8px 12px;
+        font-size: 0.85rem;
       }
       .search-filter {
         padding: 20px;
@@ -267,6 +269,10 @@
           <div class="value">-</div>
           <div class="label">Offline</div>
         </div>
+        <div class="stat-box" id="stat-unverified">
+          <div class="value">-</div>
+          <div class="label">Belum terverifikasi</div>
+        </div>
       </div>
       <div class="search-filter">
         <input
@@ -275,6 +281,7 @@
           placeholder="Cari nama atau lokasi PPPoE..."
         />
       </div>
+      <p id="map-coverage" role="status"></p>
       <div class="offline-list-container">
         <h3>
           <i class="fas fa-triangle-exclamation"></i> Daftar PPPoE Offline
@@ -325,16 +332,33 @@
       }).addTo(map);
 
       let allOntData = [];
-      let markers = L.layerGroup();
+      const markers = L.layerGroup().addTo(map);
       let lastStatus = {};
       let isFirstLoad = true;
+      const searchInput = document.getElementById("searchONT");
 
-      // ... semua fungsi Anda (updateStats, getMikrotikUserCount, dll.) tetap sama ...
+      function getCoordinates(ont) {
+        const raw = [ont.latitude, ont.longitude];
+        if (!raw.every((value) =>
+          typeof value === "number" || (typeof value === "string" && value.trim())
+        )) return null;
+
+        const [lat, lng] = raw.map((value) => Number(String(value).replace(",", ".")));
+        return Math.abs(lat) <= 90 && Math.abs(lng) <= 180 ? [lat, lng] : null;
+      }
+
+      function connectionStatus(ont) {
+        if (ont.data_quality !== "FRESH") return null;
+        const status = String(ont.status || "");
+        if (status.startsWith("ONLINE")) return "ONLINE";
+        if (status === "OFFLINE") return "OFFLINE";
+        return null;
+      }
+
       function updateStats(onts) {
         const total = onts.length;
-        const online = onts.filter((ont) =>
-          String(ont.status || "OFFLINE").startsWith("ONLINE"),
-        ).length;
+        const online = onts.filter((ont) => connectionStatus(ont) === "ONLINE").length;
+        const offlineOnts = onts.filter((ont) => connectionStatus(ont) === "OFFLINE");
         document
           .getElementById("stat-total")
           .querySelector(".value").textContent = total;
@@ -343,12 +367,12 @@
           .querySelector(".value").textContent = online;
         document
           .getElementById("stat-offline")
-          .querySelector(".value").textContent = total - online;
+          .querySelector(".value").textContent = offlineOnts.length;
+        document
+          .getElementById("stat-unverified")
+          .querySelector(".value").textContent = total - online - offlineOnts.length;
 
         const offlineList = document.getElementById("offline-list");
-        const offlineOnts = onts.filter(
-          (ont) => !String(ont.status || "OFFLINE").startsWith("ONLINE"),
-        );
         offlineList.innerHTML = "";
         if (offlineOnts.length > 0) {
           offlineOnts.forEach((ont) => {
@@ -357,8 +381,9 @@
             item.innerHTML = `<div class="name">${
               ont.user || ont.name || "Tanpa Nama"
             }</div><div class="location">${ont.lokasi || ""}</div>`;
-            if (typeof ont.latitude === "number" && typeof ont.longitude === "number") {
-              item.onclick = () => map.setView([ont.latitude, ont.longitude], 18);
+            const coordinates = getCoordinates(ont);
+            if (coordinates) {
+              item.onclick = () => map.setView(coordinates, 18);
             } else {
               item.style.cursor = "default";
             }
@@ -366,24 +391,8 @@
           });
         } else {
           offlineList.innerHTML =
-            '<p style="color: #aaa; text-align: center; margin-top: 20px;">Semua perangkat online.</p>';
+            '<p style="color: #aaa; text-align: center; margin-top: 20px;">Belum ada perangkat yang terkonfirmasi offline.</p>';
         }
-      }
-      function getMikrotikUserCount() {
-        fetch("/api/history")
-          .then((res) => res.json())
-          .then((data) => {
-            if (data.length > 0) {
-              document
-                .getElementById("stat-users")
-                .querySelector(".value").textContent =
-                data[data.length - 1].pppoe_users || 0;
-            } else {
-              document
-                .getElementById("stat-users")
-                .querySelector(".value").textContent = "0";
-            }
-          });
       }
       function applySonarEffect(marker, color) {
         const iconDiv = marker._icon;
@@ -398,6 +407,9 @@
       function renderMarkers(onts) {
         markers.clearLayers();
         onts.forEach((ont) => {
+          const coordinates = getCoordinates(ont);
+          if (!coordinates) return;
+
           let onColor, offColor;
           if (ont.icon === 119) {
             onColor = "#3498db";
@@ -410,16 +422,16 @@
             offColor = "#e74c3c";
           }
 
-          const isOnline = String(ont.status || "OFFLINE").startsWith("ONLINE");
+          const status = connectionStatus(ont);
           const quality = ont.data_quality || 'UNKNOWN';
-          const color = quality === 'FRESH' ? (isOnline ? onColor : offColor) : '#64748b';
+          const color = status === "ONLINE" ? onColor : status === "OFFLINE" ? offColor : "#64748b";
           const iconHtml = `<div style="background-color:${color};width:29px;height:29px;border-radius:50%;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 5px rgba(0,0,0,0.2);color:#ffffff;font-size:1rem;"><i class="fas fa-wifi"></i></div>`;
           const icon = L.divIcon({
             html: iconHtml,
             iconSize: [24, 24],
             className: "",
           });
-          const marker = L.marker([ont.latitude, ont.longitude], { icon });
+          const marker = L.marker(coordinates, { icon });
 
           let popupContent = `<b>${ont.user}</b>`;
           if (ont.lokasi)
@@ -430,7 +442,7 @@
           } else {
             popupContent += "<br>IP: -";
           }
-          popupContent += `<br>Status: <span style='color:${color};'>${ont.status}</span>`;
+          popupContent += `<br>Status: <span style='color:${color};'>${status || (quality === "STALE" ? "Data kedaluwarsa" : "Belum terverifikasi")}</span>`;
           popupContent += `<br>Validitas data: ${quality}`;
           marker.bindPopup(popupContent);
 
@@ -444,15 +456,14 @@
 
           const statusKey = String(ont.user || ont.id || "").trim();
           if (
-            statusKey &&
-            lastStatus[statusKey] !== undefined &&
-            lastStatus[statusKey] !== isOnline
+            statusKey && status &&
+            lastStatus[statusKey] &&
+            lastStatus[statusKey] !== status
           ) {
             applySonarEffect(marker, color);
           }
-          if (statusKey) lastStatus[statusKey] = isOnline;
+          if (statusKey) lastStatus[statusKey] = status;
         });
-        map.addLayer(markers);
       }
       function loadAllData() {
         fetch("/api/pppoes")
@@ -463,44 +474,31 @@
 
             allOntData = apbdData; // Simpan data yang sudah difilter
             updateStats(apbdData);
-            renderMarkers(
-              apbdData.filter(
-                (ont) =>
-                  typeof ont.latitude === "number" &&
-                  typeof ont.longitude === "number",
-              ),
-            );
+            const coordinates = apbdData.map(getCoordinates).filter(Boolean);
+            const coverage = document.getElementById("map-coverage");
+            const message = apbdData.length > 0 && coordinates.length === 0
+              ? `0 dari ${apbdData.length} akun bisa dipetakan. Isi latitude dan longitude di data pelanggan.`
+              : `${coordinates.length} dari ${apbdData.length} akun memiliki koordinat valid.`;
+            if (coverage.textContent !== message) coverage.textContent = message;
+            renderSearchResults();
 
-            if (isFirstLoad && apbdData.length > 0) {
-              const coordinates = apbdData
-                .filter(
-                  (ont) =>
-                    typeof ont.latitude === "number" &&
-                    typeof ont.longitude === "number",
-                )
-                .map((ont) => [ont.latitude, ont.longitude]);
-
-              if (coordinates.length > 0) {
-                const bounds = L.latLngBounds(coordinates);
-                map.fitBounds(bounds, { padding: [50, 50] });
-              }
+            if (isFirstLoad && coordinates.length > 0) {
+              map.fitBounds(L.latLngBounds(coordinates), { padding: [50, 50], maxZoom: 18 });
               isFirstLoad = false;
             }
           });
-        getMikrotikUserCount();
       }
-      document
-        .getElementById("searchONT")
-        .addEventListener("input", function (e) {
-          const searchTerm = e.target.value.toLowerCase();
-          const filteredOnts = allOntData.filter(
-            (ont) =>
-              (ont.user && ont.user.toLowerCase().includes(searchTerm)) ||
-              (ont.nama_asli && ont.nama_asli.toLowerCase().includes(searchTerm)) ||
-              (ont.lokasi && ont.lokasi.toLowerCase().includes(searchTerm)),
-          );
-          renderMarkers(filteredOnts);
-        });
+      function renderSearchResults() {
+        const searchTerm = searchInput.value.toLowerCase();
+        const filteredOnts = allOntData.filter(
+          (ont) =>
+            (ont.user && ont.user.toLowerCase().includes(searchTerm)) ||
+            (ont.nama_asli && ont.nama_asli.toLowerCase().includes(searchTerm)) ||
+            (ont.lokasi && ont.lokasi.toLowerCase().includes(searchTerm)),
+        );
+        renderMarkers(filteredOnts);
+      }
+      searchInput.addEventListener("input", renderSearchResults);
       loadAllData();
       setInterval(loadAllData, 5000);
 
